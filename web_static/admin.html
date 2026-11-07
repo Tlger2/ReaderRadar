@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReaderRadar — Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d0d0d;color:#e0e0e0;font-family:system-ui,sans-serif;padding:24px}
+h1{font-size:1.1rem;font-weight:600;color:#fff;margin-bottom:20px}
+h1 span{color:#00d4ff}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+.btn{padding:7px 14px;border-radius:6px;border:none;cursor:pointer;font-size:.85rem;font-weight:500}
+.btn-add{background:#00d4ff;color:#000}
+.btn-sm{padding:4px 10px;font-size:.78rem;border-radius:4px;border:none;cursor:pointer;font-weight:500}
+.btn-revoke{background:#ff4444;color:#fff}
+.btn-restore{background:#44bb44;color:#fff}
+.btn-pw{background:#555;color:#e0e0e0}
+.btn-logout{background:#222;color:#aaa;border:1px solid #333}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;color:#666;font-weight:500;padding:6px 10px;border-bottom:1px solid #222}
+td{padding:8px 10px;border-bottom:1px solid #1a1a1a;vertical-align:middle}
+tr:hover td{background:#161616}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:600}
+.badge-active{background:#1a3a1a;color:#44cc44}
+.badge-revoked{background:#3a1a1a;color:#ff5555}
+.badge-admin{background:#1a2a3a;color:#55aaff}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
+           align-items:center;justify-content:center;z-index:100}
+.modal-bg.show{display:flex}
+.modal{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:28px 24px;width:300px}
+.modal h2{font-size:.95rem;margin-bottom:16px;color:#fff}
+label{display:block;font-size:.78rem;color:#888;margin-bottom:4px;margin-top:12px}
+input[type=text],input[type=password]{width:100%;background:#0d0d0d;border:1px solid #2a2a2a;
+  border-radius:5px;color:#e0e0e0;font-size:.88rem;padding:7px 10px;outline:none}
+input:focus{border-color:#00d4ff}
+.modal-footer{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
+.btn-cancel{background:#222;color:#aaa;border:1px solid #333}
+.msg{font-size:.78rem;min-height:1.2em;margin-top:8px;color:#ff5555}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1><span>Reader</span>Radar — User Management</h1>
+  <div style="display:flex;gap:8px">
+    <a href="/radar"><button class="btn btn-logout">Radar</button></a>
+    <form method="post" action="/logout" style="display:inline">
+      <button class="btn btn-logout" type="submit">Sign out</button>
+    </form>
+  </div>
+</div>
+
+<div style="margin-bottom:14px;display:flex;justify-content:flex-end">
+  <button class="btn btn-add" onclick="openAdd()">+ Add user</button>
+</div>
+
+<table id="tbl">
+  <thead><tr>
+    <th>Username</th><th>Role</th><th>Status</th>
+    <th>Created</th><th>Last seen</th><th>Actions</th>
+  </tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<!-- Add user modal -->
+<div class="modal-bg" id="add-modal">
+  <div class="modal">
+    <h2>Add user</h2>
+    <label>Username</label>
+    <input id="new-user" type="text" placeholder="username">
+    <label>Password</label>
+    <input id="new-pw" type="password" placeholder="password">
+    <div class="msg" id="add-msg"></div>
+    <div class="modal-footer">
+      <button class="btn btn-sm btn-cancel" onclick="closeAdd()">Cancel</button>
+      <button class="btn btn-sm btn-add" onclick="submitAdd()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset password modal -->
+<div class="modal-bg" id="pw-modal">
+  <div class="modal">
+    <h2>Reset password for <span id="pw-username"></span></h2>
+    <label>New password</label>
+    <input id="new-pw2" type="password" placeholder="new password">
+    <div class="msg" id="pw-msg"></div>
+    <div class="modal-footer">
+      <button class="btn btn-sm btn-cancel" onclick="closePw()">Cancel</button>
+      <button class="btn btn-sm btn-add" onclick="submitPw()">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let users = [];
+let pwTarget = null;
+
+function ts(v){ return v ? new Date(v*1000).toLocaleString() : '—'; }
+
+async function load(){
+  const r = await fetch('/api/users');
+  users = await r.json();
+  render();
+}
+
+function render(){
+  const tb = document.getElementById('tbody');
+  tb.innerHTML = users.map(u => `
+    <tr>
+      <td><b>${u.username}</b></td>
+      <td>${u.is_admin ? '<span class="badge badge-admin">admin</span>' : 'user'}</td>
+      <td>${u.is_revoked
+        ? '<span class="badge badge-revoked">revoked</span>'
+        : '<span class="badge badge-active">active</span>'}</td>
+      <td>${ts(u.created_at)}</td>
+      <td>${ts(u.last_seen)}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap">
+        ${u.is_admin ? '' : (u.is_revoked
+          ? `<button class="btn btn-sm btn-restore" onclick="restore(${u.id})">Restore</button>`
+          : `<button class="btn btn-sm btn-revoke"  onclick="revoke(${u.id})">Revoke</button>`)}
+        ${u.is_admin ? '' : `<button class="btn btn-sm btn-pw" onclick="openPw(${u.id},'${u.username}')">Reset pw</button>`}
+      </td>
+    </tr>`).join('');
+}
+
+async function revoke(id){
+  if(!confirm('Revoke this user? They will be logged out immediately.')) return;
+  await fetch(`/api/users/${id}/revoke`,{method:'POST'});
+  load();
+}
+async function restore(id){
+  await fetch(`/api/users/${id}/restore`,{method:'POST'});
+  load();
+}
+
+function openAdd(){ document.getElementById('add-modal').classList.add('show'); }
+function closeAdd(){ document.getElementById('add-modal').classList.remove('show'); }
+async function submitAdd(){
+  const u = document.getElementById('new-user').value.trim();
+  const p = document.getElementById('new-pw').value.trim();
+  if(!u||!p){ document.getElementById('add-msg').textContent='Fill in both fields'; return; }
+  const r = await fetch('/api/users',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+  if(r.ok){ closeAdd(); load(); document.getElementById('new-user').value=''; document.getElementById('new-pw').value=''; }
+  else { document.getElementById('add-msg').textContent = (await r.json()).detail || 'Error'; }
+}
+
+function openPw(id,name){ pwTarget=id; document.getElementById('pw-username').textContent=name; document.getElementById('pw-modal').classList.add('show'); }
+function closePw(){ document.getElementById('pw-modal').classList.remove('show'); pwTarget=null; }
+async function submitPw(){
+  const p = document.getElementById('new-pw2').value.trim();
+  if(!p){ document.getElementById('pw-msg').textContent='Enter a password'; return; }
+  const r = await fetch(`/api/users/${pwTarget}/reset-password`,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+  if(r.ok){ closePw(); document.getElementById('new-pw2').value=''; }
+  else { document.getElementById('pw-msg').textContent='Error'; }
+}
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

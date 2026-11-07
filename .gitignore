@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.zip
+
+# Game files (copyrighted — do not commit)
+gamefiles/
+
+# Runtime-generated config & state
+skeld_config.json
+skeld_calibration.json
+radar_config.json
+*.db
+*.sqlite
+
+# Map images (may be copyrighted or server-specific)
+skeld_map.png
+web_static/rust_map.png
+
+# Secrets / keys (auto-generated on first run)
+.env
+
+# OS
+Thumbs.db
+.DS_Store

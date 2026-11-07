@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ReaderRadar ESP</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:transparent;height:100%;overflow:hidden;
+          font-family:'Consolas','Courier New',monospace;user-select:none}
+
+#overlay{
+  position:fixed;top:40px;left:10px;width:320px;
+  background:rgba(8,14,8,.82);border:1px solid #1e3a1e;
+  border-radius:5px;overflow:hidden;
+  backdrop-filter:blur(2px);
+  transition:opacity .2s;
+}
+#overlay.hidden{opacity:0;pointer-events:none}
+
+/* drag header */
+#hdr{
+  background:#0d1a0d;padding:4px 8px;
+  display:flex;align-items:center;gap:6px;cursor:move;
+  border-bottom:1px solid #1a2e1a;
+}
+#hdr-title{font-size:11px;color:#5dba5d;font-weight:700;flex:1}
+.hdr-stat{font-size:10px;color:#3a7a3a}
+.hdr-btn{font-size:10px;color:#3a6a3a;cursor:pointer;padding:0 4px}
+.hdr-btn:hover{color:#5dba5d}
+
+/* opacity slider */
+#opacity-bar{height:2px;background:#1e3a1e;position:relative;cursor:pointer}
+#opacity-fill{height:100%;background:#2a5a2a;width:82%}
+
+/* sections */
+.section-label{
+  font-size:9px;color:#2a5a2a;text-transform:uppercase;letter-spacing:.6px;
+  padding:3px 8px 2px;background:#0a120a;border-top:1px solid #131e13
+}
+.entity-row{
+  display:flex;align-items:center;gap:5px;
+  padding:2px 8px;border-bottom:1px solid rgba(30,42,30,.4);
+  cursor:pointer;transition:background .1s;
+}
+.entity-row:hover{background:rgba(21,40,21,.6)}
+.entity-row.selected{background:rgba(21,40,21,.9)}
+
+.dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+.dot.square{border-radius:1px}
+.dot.diamond{transform:rotate(45deg);border-radius:1px;width:6px;height:6px}
+
+.ent-name{flex:1;font-size:11px;color:#c8e6c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ent-name.dead{color:#5a7a5a;text-decoration:line-through}
+.ent-hp{font-size:10px;width:30px;text-align:right;flex:0 0 30px}
+.ent-dist{font-size:10px;color:#5dba5d;width:38px;text-align:right;flex:0 0 38px}
+.ent-held{font-size:9px;color:#4a8a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px}
+
+.hp-bar-wrap{width:36px;height:4px;background:#1a2e1a;border-radius:2px;flex:0 0 36px;overflow:hidden}
+.hp-bar{height:100%;border-radius:2px}
+
+/* crate timers */
+.crate-row{
+  display:flex;align-items:center;gap:5px;
+  padding:3px 8px;border-bottom:1px solid rgba(30,42,30,.4);
+}
+.crate-timer{font-size:12px;font-weight:700;width:50px;text-align:right;flex:0 0 50px}
+.crate-prog{flex:1;height:4px;background:#1a2e1a;border-radius:2px;overflow:hidden}
+.crate-prog-fill{height:100%;border-radius:2px;background:#00e5ff;transition:width .5s}
+
+/* local player bar */
+#local-bar{
+  display:flex;align-items:center;gap:8px;padding:4px 8px;
+  background:#091209;border-top:1px solid #1a2e1a;font-size:10px;color:#3a7a3a
+}
+#local-hp-bar{flex:1;height:4px;background:#1a2e1a;border-radius:2px;overflow:hidden}
+#local-hp-fill{height:100%;border-radius:2px;background:#44cc44}
+#local-info{color:#5dba5d;white-space:nowrap}
+
+/* key hint */
+#hint{font-size:9px;color:#1e3a1e;padding:2px 8px;text-align:right;background:#091209}
+
+/* no-data */
+#nodata{padding:14px 8px;font-size:11px;color:#2a5a2a;text-align:center}
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div id="hdr">
+    <span id="hdr-title">ESP — Offline</span>
+    <span class="hdr-stat" id="hdr-counts"></span>
+    <span class="hdr-btn" title="Toggle (H)" onclick="toggleVis()">👁</span>
+    <span class="hdr-btn" title="Settings" onclick="toggleSettings()">⚙</span>
+  </div>
+
+  <!-- Inline settings (collapsed by default) -->
+  <div id="settings-panel" style="display:none;padding:6px 8px;background:#091209;border-bottom:1px solid #1a2e1a">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;font-size:11px;color:#8ab88a">
+      <span style="flex:1">Opacity</span>
+      <input type="range" id="opacity-slider" min="20" max="100" value="82"
+        style="width:100px;accent-color:#5dba5d"
+        oninput="document.getElementById('overlay').style.background=`rgba(8,14,8,${this.value/100})`;document.getElementById('opacity-val').textContent=this.value+'%'">
+      <span id="opacity-val" style="width:28px;color:#5dba5d">82%</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;font-size:11px;color:#8ab88a">
+      <span style="flex:1">Max players</span>
+      <input type="range" id="max-ents" min="5" max="30" value="15"
+        style="width:100px;accent-color:#5dba5d"
+        oninput="maxEnts=+this.value;document.getElementById('max-val').textContent=this.value;build()">
+      <span id="max-val" style="width:28px;color:#5dba5d">15</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:2px">
+      <label style="font-size:10px;color:#8ab88a;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" id="chk-sleeping" checked onchange="build()"> Sleeping
+      </label>
+      <label style="font-size:10px;color:#8ab88a;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" id="chk-npc" checked onchange="build()"> NPCs
+      </label>
+      <label style="font-size:10px;color:#8ab88a;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" id="chk-animals" onchange="build()"> Animals
+      </label>
+      <label style="font-size:10px;color:#8ab88a;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" id="chk-held" checked onchange="build()"> Held items
+      </label>
+      <label style="font-size:10px;color:#8ab88a;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" id="chk-crates" checked onchange="build()"> Crate timers
+      </label>
+    </div>
+  </div>
+
+  <div id="list-wrap">
+    <div id="nodata">Waiting for feed…</div>
+  </div>
+
+  <div id="local-bar" style="display:none">
+    <span id="local-info">HP: —</span>
+    <div id="local-hp-bar"><div id="local-hp-fill" style="width:100%"></div></div>
+    <span style="color:#3a7a3a" id="local-pos"></span>
+  </div>
+  <div id="hint">[H] hide · [+/-] opacity · drag to move</div>
+</div>
+
+<script>
+// ── Item DB (shortname → short display name) ──
+const INAME={'rifle.ak':'AK','rifle.bolt':'Bolt','rifle.l96':'L96','rifle.lr300':'LR300',
+ 'rifle.semiauto':'SAR','smg.mp5':'MP5','smg.thompson':'Tommy','smg.2':'SMG',
+ 'pistol.python':'Python','pistol.revolver':'Revolver','pistol.semiauto':'Semi',
+ 'pistol.m92':'M92','shotgun.pump':'Pump','shotgun.spas12':'SPAS',
+ 'shotgun.double':'DblBarrel','lmg.m249':'M249','bow.hunting':'Bow',
+ 'bow.compound':'Compound','crossbow':'Crossbow','rocket.launcher':'RL',
+ 'explosive.timed':'C4','explosive.satchel':'Satchel','grenade.f1':'F1',
+ 'syringe.medical':'Syringe','bandage':'Bandage','largemedkit':'MedKit',
+ 'hatchet':'Hatchet','pickaxe':'Pickaxe','chainsaw':'Chainsaw',
+ 'knife.combat':'Knife','torch':'Torch','flashlight.held':'Flashlight',
+ 'longsword':'Sword','salvaged.sword':'Sal Sword'};
+function iname(s){return INAME[s]||s?.split('.').pop()||'';}
+
+function hpCol(hp){return hp>60?'#44cc44':hp>30?'#ffaa00':'#ff4444';}
+function fmtTimer(secs){
+  if(secs<=0)return'00:00';
+  const m=Math.floor(secs/60),s=Math.floor(secs%60);
+  return`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+let snapshot=null, maxEnts=15, visible=true, settingsOpen=false;
+
+// ── Build the list ──
+function build(){
+  const wrap=document.getElementById('list-wrap');
+  if(!snapshot){wrap.innerHTML='<div id="nodata">Waiting for feed…</div>';return;}
+
+  const lp=snapshot.local_player;
+  const lx=lp?.position?.x??0, lz=lp?.position?.z??0;
+  const entities=snapshot.entities||[];
+
+  const showSleeping=document.getElementById('chk-sleeping').checked;
+  const showNpc    =document.getElementById('chk-npc').checked;
+  const showAnimals=document.getElementById('chk-animals').checked;
+  const showHeld   =document.getElementById('chk-held').checked;
+  const showCrates =document.getElementById('chk-crates').checked;
+
+  function dist(e){return Math.hypot(e.position.x-lx,e.position.z-lz);}
+
+  // Players
+  const players=entities.filter(e=>{
+    if(e.category==='player') return true;
+    if(e.category==='player-sleeping') return showSleeping;
+    if(e.category==='player-npc')      return showNpc;
+    if(e.category==='animal'||e.category==='animal-bear'||e.category==='animal-wolf') return showAnimals;
+    return false;
+  }).sort((a,b)=>dist(a)-dist(b)).slice(0,maxEnts);
+
+  // Active locked crates
+  const crates=showCrates?entities.filter(e=>
+    e.category==='locked-crate'||e.category==='locked-crate-ent'
+  ).sort((a,b)=>dist(a)-dist(b)):[];
+
+  let html='';
+
+  // ── Players / NPCs / Animals ──
+  if(players.length){
+    html+='<div class="section-label">Entities</div>';
+    for(const e of players){
+      const m=e.meta||{};
+      const cat=e.category;
+      let color,dotClass='dot';
+      if(cat==='player')          {color='#ff4444';}
+      else if(cat==='player-sleeping'){color='#8b1a1a';dotClass='dot square';}
+      else if(cat==='player-npc') {color='#ffee00';}
+      else if(cat.startsWith('animal')){color='#ff44cc';}
+      else color='#aaaaaa';
+      const d=Math.round(dist(e));
+      const hp=m.health??100;
+      const name=m.name||(cat==='player-npc'?'Scientist':cat==='animal-bear'?'Bear':cat==='animal-wolf'?'Wolf':'Animal');
+      let held='';
+      if(showHeld&&m.held){
+        held=iname(m.held);
+        if(m.ammo_contents!=null&&m.ammo_capacity!=null){
+          const aLow=m.ammo_contents===0||m.ammo_contents<m.ammo_capacity*0.3;
+          held+=` <span style="color:${aLow?'#ff4444':'#5dba5d'}">${m.ammo_contents}/${m.ammo_capacity}</span>`;
+        }
+        held=`[${held}]`;
+      }
+      const sleeping=cat==='player-sleeping'?' 💤':'';
+      html+=`<div class="entity-row" onclick="this.classList.toggle('selected')">
+        <div class="${dotClass}" style="background:${color}"></div>
+        <span class="ent-name">${name}${sleeping}</span>
+        ${held?`<span class="ent-held" style="max-width:100px">${held}</span>`:''}
+        <div class="hp-bar-wrap"><div class="hp-bar" style="width:${hp}%;background:${hpCol(hp)}"></div></div>
+        <span class="ent-hp" style="color:${hpCol(hp)}">${Math.round(hp)}</span>
+        <span class="ent-dist">${d}m</span>
+      </div>`;
+    }
+  }
+
+  // ── Locked Crate Timers ──
+  if(crates.length){
+    html+='<div class="section-label">Locked Crates</div>';
+    for(const e of crates){
+      const m=e.meta||{};
+      const d=Math.round(dist(e));
+      if(e.category==='locked-crate-ent'){
+        html+=`<div class="crate-row">
+          <div class="dot square" style="background:#ff9500"></div>
+          <span class="ent-name">Bradley/Heli Crate</span>
+          <span class="ent-dist">${d}m</span>
+          <span class="crate-timer" style="color:#ff9500">LOCKED</span>
+        </div>`;
+        continue;
+      }
+      if(m.isLootable){
+        html+=`<div class="crate-row">
+          <div class="dot square" style="background:#00ff88"></div>
+          <span class="ent-name">Locked Crate</span>
+          <span class="ent-dist">${d}m</span>
+          <span class="crate-timer" style="color:#00ff88">OPEN</span>
+        </div>`;
+        continue;
+      }
+      const req=m.requiredHackSeconds||900;
+      const elapsed=m.hackSeconds||0;
+      const remaining=Math.max(0,req-elapsed);
+      const pct=Math.round((elapsed/req)*100);
+      const urgent=remaining<120&&elapsed>0;
+      const col=urgent?'#ff4400':elapsed>0?'#00e5ff':'#3a6a3a';
+      const label=elapsed>0?fmtTimer(remaining):'—';
+      html+=`<div class="crate-row">
+        <div class="dot square" style="background:${col}"></div>
+        <span class="ent-name">Locked Crate${urgent?' ⚠':''}</span>
+        <div class="crate-prog"><div class="crate-prog-fill" style="width:${pct}%;${urgent?'background:#ff4400':''}"></div></div>
+        <span class="ent-dist">${d}m</span>
+        <span class="crate-timer" style="color:${col}">${label}</span>
+      </div>`;
+    }
+  }
+
+  if(!players.length&&!crates.length){
+    html='<div id="nodata">No entities nearby</div>';
+  }
+
+  wrap.innerHTML=html;
+
+  // Header counts
+  const hCount=entities.filter(e=>e.category==='player').length;
+  const sCount=entities.filter(e=>e.category==='player-sleeping').length;
+  document.getElementById('hdr-counts').textContent=
+    `${hCount} awake · ${sCount} sleeping`;
+
+  // Local player bar
+  if(lp){
+    document.getElementById('local-bar').style.display='flex';
+    const hp=lp.health??100;
+    document.getElementById('local-info').textContent=`HP: ${Math.round(hp)}`;
+    document.getElementById('local-hp-fill').style.width=hp+'%';
+    document.getElementById('local-hp-fill').style.background=hpCol(hp);
+    const p=lp.position;
+    document.getElementById('local-pos').textContent=
+      p?`${Math.round(p.x)}, ${Math.round(p.z)}`:'';
+  }
+}
+
+// ── Visibility toggle ──
+function toggleVis(){
+  visible=!visible;
+  document.getElementById('overlay').classList.toggle('hidden',!visible);
+}
+function toggleSettings(){
+  settingsOpen=!settingsOpen;
+  document.getElementById('settings-panel').style.display=settingsOpen?'block':'none';
+}
+
+// ── Keyboard ──
+window.addEventListener('keydown',e=>{
+  if(e.key==='h'||e.key==='H') toggleVis();
+  if(e.key==='+'||e.key==='='){
+    const s=document.getElementById('opacity-slider');
+    s.value=Math.min(100,+s.value+5); s.dispatchEvent(new Event('input'));
+  }
+  if(e.key==='-'){
+    const s=document.getElementById('opacity-slider');
+    s.value=Math.max(10,+s.value-5); s.dispatchEvent(new Event('input'));
+  }
+});
+
+// ── Drag ──
+const ov=document.getElementById('overlay');
+const hdrEl=document.getElementById('hdr');
+let dragging=false,ds={x:0,y:0};
+hdrEl.addEventListener('mousedown',e=>{
+  dragging=true;
+  const r=ov.getBoundingClientRect();
+  ds={x:e.clientX-r.left,y:e.clientY-r.top};
+  e.preventDefault();
+});
+window.addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  ov.style.left=(e.clientX-ds.x)+'px';
+  ov.style.top =(e.clientY-ds.y)+'px';
+});
+window.addEventListener('mouseup',()=>dragging=false);
+
+// ── WebSocket ──
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  const ws=new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen=()=>{
+    document.getElementById('hdr-title').textContent='ESP — Live';
+    document.getElementById('hdr-title').style.color='#5dba5d';
+  };
+  ws.onmessage=ev=>{
+    snapshot=JSON.parse(ev.data);
+    build();
+  };
+  ws.onclose=()=>{
+    document.getElementById('hdr-title').textContent='ESP — Offline';
+    document.getElementById('hdr-title').style.color='#cc5555';
+    setTimeout(connect,3000);
+  };
+  setInterval(()=>ws.readyState===1&&ws.send('ping'),25000);
+}
+connect();
+</script>
+</body>
+</html>

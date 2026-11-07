@@ -1,0 +1,207 @@
+{
+  "_note": "Template — null values filled in by dma_probe.py after scanning a live Rust process.",
+  "game": "Rust",
+  "engine": "il2cpp_unity",
+  "version": null,
+  "build": {
+    "pe_timestamp": null,
+    "size_of_image": null,
+    "assembly": "GameAssembly.dll"
+  },
+  "world": {
+    "size": 3500,
+    "map_image_path": null
+  },
+  "entity_list": {
+    "description": "BaseNetworkable.clientEntities — all networked objects on the client",
+    "klass_static_ptr": null,
+    "static_fields_offset": null,
+    "list_field_offset": null,
+    "list_items_offset": null,
+    "list_count_offset": null
+  },
+  "classes": {
+    "BasePlayer": {
+      "klass_ptr": null,
+      "fields": {
+        "transform":    { "offset": null, "type": "ptr",    "note": "UnityEngine.Transform component ptr" },
+        "pos_x":        { "offset": null, "type": "float",  "via": "transform->localPosition.x" },
+        "pos_y":        { "offset": null, "type": "float",  "via": "transform->localPosition.y" },
+        "pos_z":        { "offset": null, "type": "float",  "via": "transform->localPosition.z" },
+        "display_name": { "offset": null, "type": "il2cpp_string" },
+        "health":       { "offset": null, "type": "float",  "range": [0, 100] },
+        "flags":        { "offset": null, "type": "uint32", "note": "bitmask — bit 6 = IsNpc, bit 16 = Sleeping" },
+        "held_entity":  { "offset": null, "type": "ptr",    "note": "HeldEntity ptr; cast to BaseProjectile if weapon" },
+        "inventory":    { "offset": null, "type": "ptr",    "note": "PlayerInventory ptr" }
+      },
+      "_held_entity_chain": {
+        "note": "Cast HeldEntity ptr to BaseProjectile to read magazine. Non-weapons will not have primaryMagazine; check klass before reading.",
+        "BaseProjectile": {
+          "primaryMagazine": { "offset": null, "type": "ptr", "note": "BaseMagazine ptr" }
+        },
+        "BaseMagazine": {
+          "contents":  { "offset": null, "type": "int32", "note": "rounds currently in magazine" },
+          "capacity":  { "offset": null, "type": "int32", "note": "maximum magazine capacity" },
+          "ammoType":  { "offset": null, "type": "ptr",   "note": "ItemDefinition ptr → shortname of loaded ammo type (e.g. ammo.rifle, ammo.rifle.explosive)" }
+        }
+      },
+      "_inventory_chain": {
+        "note": "PlayerInventory → ItemContainer → Item list",
+        "PlayerInventory": {
+          "containerBelt": { "offset": null, "type": "ptr", "note": "hotbar — 6 slots" },
+          "containerMain": { "offset": null, "type": "ptr", "note": "main bag — 24 slots" },
+          "containerWear": { "offset": null, "type": "ptr", "note": "clothing — 7 slots" }
+        },
+        "ItemContainer": {
+          "itemList":      { "offset": null, "type": "il2cpp_list_ptr", "element": "Item" },
+          "capacity":      { "offset": null, "type": "int32" }
+        },
+        "Item": {
+          "info":          { "offset": null, "type": "ptr", "note": "ItemDefinition ptr → shortname string" },
+          "amount":        { "offset": null, "type": "int32" },
+          "condition":     { "offset": null, "type": "float", "range": [0.0, 1.0] },
+          "position":      { "offset": null, "type": "int32", "note": "slot index" }
+        },
+        "ItemDefinition": {
+          "shortname":     { "offset": null, "type": "il2cpp_string", "examples": ["rifle.ak","ammo.rifle","syringe.medical"] }
+        }
+      },
+      "emit_as": {
+        "awake_player":   { "category": "player",          "meta": ["display_name","health","held_entity","ammo_contents","ammo_capacity","ammo_type"] },
+        "sleeping_player":{ "category": "player-sleeping",  "meta": ["display_name","health"] },
+        "npc_scientist":  { "category": "player-npc",       "meta": ["health","held_entity","ammo_contents","ammo_capacity"] }
+      }
+    },
+    "BaseAnimalNPC": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":    { "offset": null, "type": "float" },
+        "pos_y":    { "offset": null, "type": "float" },
+        "pos_z":    { "offset": null, "type": "float" },
+        "health":   { "offset": null, "type": "float" },
+        "sub_type": { "offset": null, "type": "enum",
+          "values": { "0":"bear","1":"wolf","2":"boar","3":"stag","4":"chicken","5":"horse" }
+        }
+      },
+      "emit_as": {
+        "default": { "category": "animal", "meta": ["sub_type","health"] }
+      }
+    },
+    "OreResourceEntity": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":         { "offset": null, "type": "float" },
+        "pos_y":         { "offset": null, "type": "float" },
+        "pos_z":         { "offset": null, "type": "float" },
+        "resource_type": { "offset": null, "type": "enum",
+          "values": { "0":"stone","1":"metal","2":"sulfur","3":"hqm" }
+        }
+      },
+      "emit_as": {
+        "default": { "category_template": "ore-{resource_type}" }
+      }
+    },
+    "LootContainer": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":          { "offset": null, "type": "float" },
+        "pos_y":          { "offset": null, "type": "float" },
+        "pos_z":          { "offset": null, "type": "float" },
+        "container_type": { "offset": null, "type": "enum",
+          "values": { "0":"basic","1":"military","2":"elite","3":"barrel" }
+        }
+      },
+      "emit_as": {
+        "default": { "category_template": "loot-{container_type}" }
+      }
+    },
+    "BradleyAPC": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":  { "offset": null, "type": "float" },
+        "pos_y":  { "offset": null, "type": "float" },
+        "pos_z":  { "offset": null, "type": "float" },
+        "health": { "offset": null, "type": "float", "range": [0, 1000] }
+      },
+      "emit_as": {
+        "default": { "category": "bradley", "meta": ["health"] }
+      }
+    },
+    "BaseHelicopter": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":  { "offset": null, "type": "float" },
+        "pos_y":  { "offset": null, "type": "float" },
+        "pos_z":  { "offset": null, "type": "float" },
+        "health": { "offset": null, "type": "float", "range": [0, 10000] }
+      },
+      "emit_as": {
+        "default": { "category": "helicopter", "meta": ["health"] }
+      }
+    },
+    "SupplyDrop": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x": { "offset": null, "type": "float" },
+        "pos_y": { "offset": null, "type": "float" },
+        "pos_z": { "offset": null, "type": "float" }
+      },
+      "emit_as": {
+        "default": { "category": "supply-drop" }
+      }
+    },
+    "CollectibleEntity": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":          { "offset": null, "type": "float" },
+        "pos_z":          { "offset": null, "type": "float" },
+        "item_shortname": { "offset": null, "type": "il2cpp_string",
+          "note": "e.g. 'wood','stones','metal.ore','sulfur.ore','hemp.seed'" }
+      },
+      "emit_as": {
+        "default": { "category_template": "pickup-{item_shortname}" }
+      }
+    },
+    "BaseVehicle": {
+      "klass_ptr": null,
+      "fields": {
+        "pos_x":    { "offset": null, "type": "float" },
+        "pos_y":    { "offset": null, "type": "float" },
+        "pos_z":    { "offset": null, "type": "float" },
+        "health":   { "offset": null, "type": "float" },
+        "occupied": { "offset": null, "type": "bool" }
+      },
+      "emit_as": {
+        "default": { "category": "vehicle", "meta": ["health","occupied"] }
+      }
+    },
+    "HackableLockedCrate": {
+      "klass_ptr": null,
+      "_note": "Hackable crates on Cargo Ship, Oil Rigs, and monuments. hackSeconds counts up; timer_remaining = requiredHackSeconds - hackSeconds.",
+      "fields": {
+        "pos_x":               { "offset": null, "type": "float" },
+        "pos_y":               { "offset": null, "type": "float" },
+        "pos_z":               { "offset": null, "type": "float" },
+        "hackSeconds":         { "offset": null, "type": "float",  "note": "seconds elapsed since someone started hacking (0 = untouched)" },
+        "requiredHackSeconds": { "offset": null, "type": "float",  "note": "total hack time needed (server default 900 = 15 min)" },
+        "isLootable":          { "offset": null, "type": "bool",   "note": "true once hacking is complete and crate can be opened" }
+      },
+      "emit_as": {
+        "default": { "category": "locked-crate", "meta": ["hackSeconds","requiredHackSeconds","isLootable"] }
+      }
+    },
+    "LockedByEntCrate": {
+      "klass_ptr": null,
+      "_note": "Crates that drop from Bradley APC and Patrol Helicopter kills. Locked for a fixed time before anyone can loot.",
+      "fields": {
+        "pos_x":        { "offset": null, "type": "float" },
+        "pos_y":        { "offset": null, "type": "float" },
+        "pos_z":        { "offset": null, "type": "float" },
+        "lockingEnt":   { "offset": null, "type": "ptr",   "note": "ptr to the BradleyAPC/Helicopter that owns this crate; null when unlocked" }
+      },
+      "emit_as": {
+        "default": { "category": "locked-crate-ent", "meta": [] }
+      }
+    }
+  }
+}
