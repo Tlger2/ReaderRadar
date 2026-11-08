@@ -51,7 +51,7 @@ def load_vmm():
 
 
 def init_vmm(vmm):
-    args = [b"", b"-device", b"existingremote"]
+    args = [b"", b"-device", b"fpga"]
     argc = len(args)
     argv = (ctypes.c_char_p * argc)(*args)
     h = vmm.VMMDLL_Initialize(argc, argv)

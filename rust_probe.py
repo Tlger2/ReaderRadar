@@ -38,7 +38,7 @@ def load_vmm():
 
 
 def init_vmm(vmm):
-    args = [b"", b"-device", b"existingremote"]
+    args = [b"", b"-device", b"fpga"]
     argc = len(args)
     argv_type = ctypes.c_char_p * argc
     argv = argv_type(*args)
