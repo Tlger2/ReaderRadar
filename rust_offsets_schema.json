@@ -1,12 +1,16 @@
 {
-  "_note": "Template — null values filled in by dma_probe.py after scanning a live Rust process.",
+  "_note": "Offsets confirmed from live dump — build SHA256 dll=199a470f...  metadata=266b023e...",
+  "_dump_source": "dump_fields.json (Cpp2IL REGISTRATION_RVA=0x0DBED230, IL2CPP v39, Unity 6000.3.26x1)",
+  "_hashed_names": "Many Rust field names are IL2CPP-obfuscated (shown as %xxxx in dump). Instance offsets with value 0x67676767 are static fields with no instance offset.",
   "game": "Rust",
   "engine": "il2cpp_unity",
-  "version": null,
+  "version": "Unity 6000.3.26x1",
   "build": {
     "pe_timestamp": null,
-    "size_of_image": null,
-    "assembly": "GameAssembly.dll"
+    "dll_sha256":  "199a470f2510320be42d127cc55e946f51a2fc0b0b3ed0bf8671c2a8bb73b252",
+    "meta_sha256": "266b023e647e1fcedd7c4590ea110d5131bbb070bf23f3c42fb33f935cc9750a",
+    "assembly": "GameAssembly.dll",
+    "registration_rva": "0x0DBED230"
   },
   "world": {
     "size": 3500,
@@ -18,58 +22,94 @@
     "static_fields_offset": null,
     "list_field_offset": null,
     "list_items_offset": null,
-    "list_count_offset": null
+    "list_count_offset": null,
+    "_todo": "Runtime scan needed: pattern-scan for static Il2CppObject** pointer to clientEntities ListDictionary"
   },
   "classes": {
+    "BaseNetworkable": {
+      "klass_ptr": null,
+      "_note": "Parent of all network-synced entities. Fields confirmed from dump.",
+      "fields": {
+        "prefabID":    { "offset": "0x54", "type": "uint32" },
+        "globalBroadcast": { "offset": "0x58", "type": "bool" }
+      }
+    },
+    "BaseCombatEntity": {
+      "klass_ptr": null,
+      "_note": "Parent of all combat entities (players, NPCs, vehicles). health is a hashed private field — identify during validation pass.",
+      "fields": {
+        "startHealth":           { "offset": "0x258", "type": "float",  "note": "serialized default health, NOT runtime health" },
+        "lifestate":             { "offset": "0x2C0", "type": "uint32", "note": "0=Alive 1=Wounded 2=Dead" },
+        "health":                { "offset": null,    "type": "float",  "range": [0, 100], "note": "HASHED — identify by scanning BaseCombatEntity fields around 0x218-0x250 during validation" }
+      }
+    },
     "BasePlayer": {
       "klass_ptr": null,
       "fields": {
-        "transform":    { "offset": null, "type": "ptr",    "note": "UnityEngine.Transform component ptr" },
-        "pos_x":        { "offset": null, "type": "float",  "via": "transform->localPosition.x" },
-        "pos_y":        { "offset": null, "type": "float",  "via": "transform->localPosition.y" },
-        "pos_z":        { "offset": null, "type": "float",  "via": "transform->localPosition.z" },
-        "display_name": { "offset": null, "type": "il2cpp_string" },
-        "health":       { "offset": null, "type": "float",  "range": [0, 100] },
-        "flags":        { "offset": null, "type": "uint32", "note": "bitmask — bit 6 = IsNpc, bit 16 = Sleeping" },
-        "held_entity":  { "offset": null, "type": "ptr",    "note": "HeldEntity ptr; cast to BaseProjectile if weapon" },
-        "inventory":    { "offset": null, "type": "ptr",    "note": "PlayerInventory ptr" }
+        "transform":    { "offset": null,    "type": "ptr",    "note": "UnityEngine.Transform ptr — via native object chain, not a managed IL2CPP field" },
+        "pos_x":        { "offset": null,    "type": "float",  "via": "transform->localPosition.x" },
+        "pos_y":        { "offset": null,    "type": "float",  "via": "transform->localPosition.y" },
+        "pos_z":        { "offset": null,    "type": "float",  "via": "transform->localPosition.z" },
+        "display_name": { "offset": null,    "type": "il2cpp_string", "note": "HASHED — identify during validation (player name visible in game)" },
+        "health":       { "offset": null,    "type": "float",  "range": [0, 100], "note": "inherited from BaseCombatEntity — same HASHED field" },
+        "flags":        { "offset": null,    "type": "uint32", "note": "HASHED bitmask — bit 16 = Sleeping, bit 6 = IsNpc" },
+        "held_entity":  { "offset": null,    "type": "ptr",    "note": "HASHED — HeldEntity ptr; cast to BaseProjectile if weapon" },
+        "inventory":    { "offset": null,    "type": "ptr",    "note": "HASHED — PlayerInventory ptr" }
       },
       "_held_entity_chain": {
-        "note": "Cast HeldEntity ptr to BaseProjectile to read magazine. Non-weapons will not have primaryMagazine; check klass before reading.",
+        "note": "Cast HeldEntity ptr to BaseProjectile to read magazine.",
         "BaseProjectile": {
-          "primaryMagazine": { "offset": null, "type": "ptr", "note": "BaseMagazine ptr" }
+          "primaryMagazine": { "offset": "0x3F8", "type": "ptr", "note": "BaseMagazine ptr — CONFIRMED from dump" }
         },
         "BaseMagazine": {
-          "contents":  { "offset": null, "type": "int32", "note": "rounds currently in magazine" },
-          "capacity":  { "offset": null, "type": "int32", "note": "maximum magazine capacity" },
-          "ammoType":  { "offset": null, "type": "ptr",   "note": "ItemDefinition ptr → shortname of loaded ammo type (e.g. ammo.rifle, ammo.rifle.explosive)" }
+          "contents":  { "offset": null, "type": "int32", "note": "rounds currently in magazine — class not found in Assembly-CSharp; may be in runtime assembly" },
+          "capacity":  { "offset": null, "type": "int32" },
+          "ammoType":  { "offset": null, "type": "ptr",   "note": "ItemDefinition ptr" }
         }
       },
       "_inventory_chain": {
-        "note": "PlayerInventory → ItemContainer → Item list",
+        "note": "PlayerInventory → ItemContainer → Item list — classes not found in dump; likely obfuscated or in runtime assembly",
         "PlayerInventory": {
-          "containerBelt": { "offset": null, "type": "ptr", "note": "hotbar — 6 slots" },
-          "containerMain": { "offset": null, "type": "ptr", "note": "main bag — 24 slots" },
-          "containerWear": { "offset": null, "type": "ptr", "note": "clothing — 7 slots" }
+          "containerBelt": { "offset": null, "type": "ptr" },
+          "containerMain": { "offset": null, "type": "ptr" },
+          "containerWear": { "offset": null, "type": "ptr" }
         },
         "ItemContainer": {
-          "itemList":      { "offset": null, "type": "il2cpp_list_ptr", "element": "Item" },
-          "capacity":      { "offset": null, "type": "int32" }
+          "itemList": { "offset": null, "type": "il2cpp_list_ptr", "element": "Item" },
+          "capacity": { "offset": null, "type": "int32" }
         },
         "Item": {
-          "info":          { "offset": null, "type": "ptr", "note": "ItemDefinition ptr → shortname string" },
-          "amount":        { "offset": null, "type": "int32" },
-          "condition":     { "offset": null, "type": "float", "range": [0.0, 1.0] },
-          "position":      { "offset": null, "type": "int32", "note": "slot index" }
+          "info":     { "offset": null, "type": "ptr",   "note": "ItemDefinition ptr" },
+          "amount":   { "offset": null, "type": "int32" },
+          "condition":{ "offset": null, "type": "float", "range": [0.0, 1.0] },
+          "position": { "offset": null, "type": "int32", "note": "slot index" }
         },
         "ItemDefinition": {
-          "shortname":     { "offset": null, "type": "il2cpp_string", "examples": ["rifle.ak","ammo.rifle","syringe.medical"] }
+          "shortname": { "offset": "0x28", "type": "il2cpp_string", "note": "CONFIRMED — e.g. rifle.ak, ammo.rifle" },
+          "itemid":    { "offset": "0x20", "type": "int32",         "note": "CONFIRMED" },
+          "category":  { "offset": "0x58", "type": "int32",         "note": "CONFIRMED" }
         }
       },
       "emit_as": {
-        "awake_player":   { "category": "player",          "meta": ["display_name","health","held_entity","ammo_contents","ammo_capacity","ammo_type"] },
-        "sleeping_player":{ "category": "player-sleeping",  "meta": ["display_name","health"] },
-        "npc_scientist":  { "category": "player-npc",       "meta": ["health","held_entity","ammo_contents","ammo_capacity"] }
+        "awake_player":    { "category": "player",         "meta": ["display_name","health","held_entity","ammo_contents","ammo_capacity","ammo_type"] },
+        "sleeping_player": { "category": "player-sleeping", "meta": ["display_name","health"] },
+        "npc_scientist":   { "category": "player-npc",      "meta": ["health","held_entity","ammo_contents","ammo_capacity"] }
+      }
+    },
+    "BaseProjectile": {
+      "klass_ptr": null,
+      "fields": {
+        "primaryMagazine":        { "offset": "0x3F8", "type": "ptr",   "note": "CONFIRMED" },
+        "reloadTime":             { "offset": "0x3F0", "type": "float", "note": "CONFIRMED" },
+        "automatic":              { "offset": "0x3B0", "type": "bool",  "note": "CONFIRMED" }
+      }
+    },
+    "ItemDefinition": {
+      "klass_ptr": null,
+      "fields": {
+        "itemid":    { "offset": "0x20", "type": "int32",         "note": "CONFIRMED" },
+        "shortname": { "offset": "0x28", "type": "il2cpp_string", "note": "CONFIRMED" },
+        "category":  { "offset": "0x58", "type": "int32",         "note": "CONFIRMED" }
       }
     },
     "BaseAnimalNPC": {
@@ -109,7 +149,9 @@
         "pos_z":          { "offset": null, "type": "float" },
         "container_type": { "offset": null, "type": "enum",
           "values": { "0":"basic","1":"military","2":"elite","3":"barrel" }
-        }
+        },
+        "lootDefinition": { "offset": "0x3C8", "type": "ptr",   "note": "CONFIRMED" },
+        "destroyOnEmpty": { "offset": "0x3C0", "type": "bool",  "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category_template": "loot-{container_type}" }
@@ -118,10 +160,12 @@
     "BradleyAPC": {
       "klass_ptr": null,
       "fields": {
-        "pos_x":  { "offset": null, "type": "float" },
-        "pos_y":  { "offset": null, "type": "float" },
-        "pos_z":  { "offset": null, "type": "float" },
-        "health": { "offset": null, "type": "float", "range": [0, 1000] }
+        "pos_x":  { "offset": null,    "type": "float" },
+        "pos_y":  { "offset": null,    "type": "float" },
+        "pos_z":  { "offset": null,    "type": "float" },
+        "health": { "offset": null,    "type": "float", "range": [0, 1000] },
+        "AIRoot": { "offset": "0x3E8", "type": "ptr",   "note": "CONFIRMED" },
+        "targetList": { "offset": "0x430", "type": "il2cpp_list_ptr", "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category": "bradley", "meta": ["health"] }
@@ -130,10 +174,11 @@
     "BaseHelicopter": {
       "klass_ptr": null,
       "fields": {
-        "pos_x":  { "offset": null, "type": "float" },
-        "pos_y":  { "offset": null, "type": "float" },
-        "pos_z":  { "offset": null, "type": "float" },
-        "health": { "offset": null, "type": "float", "range": [0, 10000] }
+        "pos_x":  { "offset": null,    "type": "float" },
+        "pos_y":  { "offset": null,    "type": "float" },
+        "pos_z":  { "offset": null,    "type": "float" },
+        "health": { "offset": null,    "type": "float", "range": [0, 10000] },
+        "engineThrustMax": { "offset": "0x448", "type": "float", "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category": "helicopter", "meta": ["health"] }
@@ -144,7 +189,8 @@
       "fields": {
         "pos_x": { "offset": null, "type": "float" },
         "pos_y": { "offset": null, "type": "float" },
-        "pos_z": { "offset": null, "type": "float" }
+        "pos_z": { "offset": null, "type": "float" },
+        "ParachuteRoot": { "offset": "0x410", "type": "ptr", "note": "CONFIRMED — non-null = still falling" }
       },
       "emit_as": {
         "default": { "category": "supply-drop" }
@@ -153,10 +199,10 @@
     "CollectibleEntity": {
       "klass_ptr": null,
       "fields": {
-        "pos_x":          { "offset": null, "type": "float" },
-        "pos_z":          { "offset": null, "type": "float" },
-        "item_shortname": { "offset": null, "type": "il2cpp_string",
-          "note": "e.g. 'wood','stones','metal.ore','sulfur.ore','hemp.seed'" }
+        "pos_x":    { "offset": null,    "type": "float" },
+        "pos_z":    { "offset": null,    "type": "float" },
+        "itemName": { "offset": "0x218", "type": "il2cpp_string", "note": "CONFIRMED — human label" },
+        "itemList": { "offset": "0x220", "type": "il2cpp_list_ptr", "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category_template": "pickup-{item_shortname}" }
@@ -169,7 +215,8 @@
         "pos_y":    { "offset": null, "type": "float" },
         "pos_z":    { "offset": null, "type": "float" },
         "health":   { "offset": null, "type": "float" },
-        "occupied": { "offset": null, "type": "bool" }
+        "occupied": { "offset": null, "type": "bool" },
+        "mountPoints": { "offset": "0x408", "type": "il2cpp_list_ptr", "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category": "vehicle", "meta": ["health","occupied"] }
@@ -177,14 +224,16 @@
     },
     "HackableLockedCrate": {
       "klass_ptr": null,
-      "_note": "Hackable crates on Cargo Ship, Oil Rigs, and monuments. hackSeconds counts up; timer_remaining = requiredHackSeconds - hackSeconds.",
+      "_note": "hackSeconds/requiredHackSeconds/isLootable are hashed — identify during validation.",
       "fields": {
         "pos_x":               { "offset": null, "type": "float" },
         "pos_y":               { "offset": null, "type": "float" },
         "pos_z":               { "offset": null, "type": "float" },
-        "hackSeconds":         { "offset": null, "type": "float",  "note": "seconds elapsed since someone started hacking (0 = untouched)" },
-        "requiredHackSeconds": { "offset": null, "type": "float",  "note": "total hack time needed (server default 900 = 15 min)" },
-        "isLootable":          { "offset": null, "type": "bool",   "note": "true once hacking is complete and crate can be opened" }
+        "hackSeconds":         { "offset": null, "type": "float",  "note": "HASHED — seconds elapsed hacking" },
+        "requiredHackSeconds": { "offset": null, "type": "float",  "note": "HASHED — total time needed (default 900)" },
+        "isLootable":          { "offset": null, "type": "bool",   "note": "HASHED" },
+        "timerText":           { "offset": "0x418", "type": "ptr", "note": "CONFIRMED — UI text component" },
+        "shockEffect":         { "offset": "0x430", "type": "ptr", "note": "CONFIRMED" }
       },
       "emit_as": {
         "default": { "category": "locked-crate", "meta": ["hackSeconds","requiredHackSeconds","isLootable"] }
@@ -192,12 +241,11 @@
     },
     "LockedByEntCrate": {
       "klass_ptr": null,
-      "_note": "Crates that drop from Bradley APC and Patrol Helicopter kills. Locked for a fixed time before anyone can loot.",
       "fields": {
-        "pos_x":        { "offset": null, "type": "float" },
-        "pos_y":        { "offset": null, "type": "float" },
-        "pos_z":        { "offset": null, "type": "float" },
-        "lockingEnt":   { "offset": null, "type": "ptr",   "note": "ptr to the BradleyAPC/Helicopter that owns this crate; null when unlocked" }
+        "pos_x":    { "offset": null, "type": "float" },
+        "pos_y":    { "offset": null, "type": "float" },
+        "pos_z":    { "offset": null, "type": "float" },
+        "lockingEnt": { "offset": null, "type": "ptr", "note": "HASHED — ptr to BradleyAPC/Helicopter" }
       },
       "emit_as": {
         "default": { "category": "locked-crate-ent", "meta": [] }
