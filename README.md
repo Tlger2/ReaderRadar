@@ -8,9 +8,9 @@ A DMA-based, read-only radar overlay for Rust (private server). Browser-based �
 Gaming PC (Rust running)
       ↕ PCIe DMA (read-only, Captain DMA / FTDI FT601)
 Reader Laptop
-  ├── dma_probe.py       → parses dump.cs + pattern-scans statics → rust_offsets_schema.json
-  ├── skeld_snapshot.py  → reads entities via MemProcFS every ~100ms → writes JSON to %TEMP%
-  ├── web_radar_push.py  → watches JSON file → POSTs to web server
+  ├── rust_probe.py       → live MetadataRegistration scan → dump_fields.json
+  ├── rust_snapshot.py    → walks entities ~10 Hz → %TEMP%/ReaderRadar-Rust-live.json
+  ├── web_radar_push.py   → watches JSON → POST /push
   └── web_radar_server.py (FastAPI :8080)
             ↕ WebSocket
   ┌──────────────────────────────────────┐
@@ -21,116 +21,86 @@ Reader Laptop
   └──────────────────────────────────────┘
 ```
 
+## Quick start (reader laptop)
+
+```powershell
+# Optional — point at your MemProcFS / PCILeech folder
+$env:MEMPROCFS_DIR = "C:\path\to\MemProcFS"
+$env:RUST_PROCESS  = "RustClient.exe"
+
+python rust_probe.py
+python rust_snapshot.py
+
+# In another terminal — after first server run creates web_radar_config.json
+$env:WEB_RADAR_KEY = "<push_key from web_radar_config.json>"
+python web_radar_server.py
+python web_radar_push.py
+```
+
+Open `http://<reader-ip>:8080/radar` (login required).
+
+## Configuration (`dma_config.py`)
+
+| Env var | Default | Purpose |
+|---------|---------|--------|
+| `VMM_DLL_PATH` | (search) | Full path to `vmm.dll` |
+| `MEMPROCFS_DIR` | (search) | Directory containing `vmm.dll` |
+| `VMM_DEVICE` | `fpga` | MemProcFS `-device` value |
+| `RUST_PROCESS` | `RustClient.exe` | Target process name |
+| `SNAPSHOT_PATH` | `%TEMP%\ReaderRadar-Rust-live.json` | Live entity JSON |
+| `WEB_RADAR_URL` | `http://localhost:8080` | FastAPI base URL |
+| `WEB_RADAR_KEY` | (empty) | `X-Push-Key` for `/push` |
+
+If neither `VMM_DLL_PATH` nor `MEMPROCFS_DIR` is set, common Download/Tools paths are tried.
+
 ## Files
 
 | File | Purpose |
-|------|---------|
-| `web_radar_server.py` | FastAPI server — auth, WebSocket broadcast, push endpoint |
+|------|--------|
+| `dma_config.py` | Shared env-based config for probe / snapshot / push |
+| `rust_probe.py` | Live IL2CPP MetadataRegistration scan → `dump_fields.json` |
+| `rust_snapshot.py` | Entity walk + live JSON writer (`--local-server` for debug UI) |
+| `web_radar_server.py` | FastAPI — auth, WebSocket broadcast, push endpoint |
 | `web_radar_push.py` | Watches snapshot JSON, POSTs to server |
-| `web_static/radar.html` | Full interactive radar (AtomicDMA-style layout) |
-| `web_static/overlay.html` | Compact ESP overlay for gaming PC browser |
+| `web_static/radar.html` | Full interactive radar |
+| `web_static/overlay.html` | Compact ESP overlay |
 | `web_static/login.html` | Login page |
-| `web_static/admin.html` | User management (add/revoke/reset-pw) |
-| `rust_offsets_schema.json` | Offset template — null values filled by dma_probe.py |
-| `skeld_probe.py` | Among Us proof-of-concept probe (reference) |
-| `skeld_snapshot.py` | Among Us proof-of-concept reader (reference) |
-| `radar_desktop.py` | Among Us desktop overlay (reference) |
-| `Start-Skeld.ps1` | One-shot launcher (probe → snapshot → web stack → browser) |
+| `web_static/admin.html` | User management |
+| `rust_offsets_schema.json` | Offset template (future dump.cs path) |
+| `skeld_*.py` / `radar_desktop.py` | Among Us PoC reference |
 | `requirements_web.txt` | Python deps for web server |
 
-## Radar Features
+## Radar features
 
-- **Interactive map** — pan, zoom, click to inspect, double-click to zoom to entity
-- **Entity labels** — `Name (HP) DISTm` / `Weapon 28/30 (ammo type)`
-- **Loot Filter** — per-category toggles with live counts
-- **Dropped Items** — per-item mark list with magenta glow on canvas
-- **Locked crate timers** — MM:SS countdown, red urgent under 2 min, green when open
-- **ESP lines** — optional lines from local player to entities
-- **ESP Widget** — draggable mini-map overlay
-- **Click-to-inspect** — HP bar, ammo progress bar, inventory grid
+- Interactive map — pan, zoom, click to inspect
+- Entity labels, loot filters, locked-crate timers
+- Optional ESP lines and compact `/overlay` window
 
-## Overlay Features (`/overlay`)
+## Overlay (`/overlay`)
 
 - Compact entity list sorted by distance
-- Ammo count color-coded (green → orange → red when low)
-- Locked crate timers with progress bar
-- Draggable, opacity slider, `H` key to hide/show
-- Launch on gaming PC: `start chrome --app="http://<ip>:8080/overlay" --window-size=330,640 --always-on-top`
+- Draggable, opacity slider, `H` to hide/show
+- Example: `start chrome --app="http://<ip>:8080/overlay" --window-size=330,640 --always-on-top`
 
-## Offset Discovery Workflow
+## Offset discovery
 
-1. **Offline** — Run [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) on `GameAssembly.dll` + `global-metadata.dat` → produces `dump.cs`
-2. **Automated** — `dma_probe.py` parses `dump.cs` for field offsets, pattern-scans for entity list static → populates `rust_offsets_schema.json`
-3. **Manual validation** (~16 min, one Freeplay session) — take damage (health), fire weapon (ammo), mine ores (resource_type), etc.
+1. Run `rust_probe.py` while the game is running (DMA attached).
+2. It walks MetadataRegistration, locates `clientEntities`, resolves field offsets, writes `dump_fields.json`.
+3. `rust_snapshot.py` loads that file and starts the live loop.
+4. Validate on a private Freeplay session (health, ammo, flags, etc.).
 
-### Validation checklist
-- [ ] `health` — take damage
-- [ ] `ammo_contents/capacity` — fire rounds
-- [ ] `ammo_type` — load HV ammo
-- [ ] `held_entity` shortname — swap 3 weapons
-- [ ] `flags` sleeping bit — `/sleep` console command
-- [ ] `hackSeconds` — start hacking a locked crate
-- [ ] Ore `resource_type` enum — hit stone, metal, sulfur nodes
-- [ ] Loot `container_type` enum — open barrel, basic, military crate
-- [ ] Inventory chain — put known items in belt/main/wear
-- [ ] Animal `sub_type` — find bear and wolf
-- [ ] `vehicle.occupied` — get in/out of car
+Offline `dump.cs` / Il2CppDumper support remains a planned path via `rust_offsets_schema.json`.
 
-## Snapshot Format
-
-```json
-{
-  "ts": 1234567890,
-  "world_size": 3500,
-  "local_player": {
-    "position": {"x": 100.0, "y": 5.0, "z": 200.0},
-    "health": 85.0
-  },
-  "entities": [
-    {
-      "category": "player",
-      "position": {"x": 150.0, "y": 5.0, "z": 220.0},
-      "meta": {
-        "name": "PlayerName",
-        "health": 72.0,
-        "held": "rifle.ak",
-        "ammo_contents": 28,
-        "ammo_capacity": 30,
-        "ammo_type": "ammo.rifle"
-      }
-    }
-  ]
-}
-```
-
-## Entity Categories
-
-| Category | Color | Shape |
-|----------|-------|-------|
-| `player` | Red | Circle |
-| `player-sleeping` | Dark maroon | Square |
-| `player-npc` | Yellow | Circle |
-| `animal-bear` | Magenta | Circle |
-| `animal-wolf` | Magenta | Circle |
-| `ore-sulfur` | Yellow | Diamond |
-| `ore-metal` | Blue | Diamond |
-| `ore-stone` | White | Diamond |
-| `loot-*` | Gold | Square |
-| `locked-crate` | Cyan | Square |
-| `supply-drop` | Red-magenta | Triangle |
-| `vehicle` | Purple | Circle |
-| `dropped` (marked) | Pink glow | Diamond |
-
-## Security Constraints
+## Security constraints
 
 - **Read-only** — no memory writes, no calls into the game process
 - **Private server only** — no public match use
-- No firmware/driver/Defender/BIOS changes
+- No firmware / driver / Defender / BIOS changes
 - No aimbot, chams, recoil reduction, or any write-based feature
 
 ## TODO
 
-- [ ] `dma_probe.py` — dump.cs parser + MemProcFS pattern scanner
-- [ ] `rust_snapshot.py` — main Rust DMA entity reader loop (replaces skeld_snapshot.py)
-- [ ] Populate `rust_offsets_schema.json` with real offsets after Il2CppDumper run
-- [ ] Run validation session on private server
+- [ ] Optional offline `dump.cs` parser path (`dma_probe.py`)
+- [ ] Richer entity categories (ammo, timers, inventory) matching the web UI schema
+- [ ] Populate and version `rust_offsets_schema.json` per game build
+- [ ] Validation session checklist on private server
