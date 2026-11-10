@@ -83,3 +83,8 @@ def web_radar_url() -> str:
 
 def web_radar_key() -> str:
     return os.environ.get("WEB_RADAR_KEY", "")
+
+
+def world_size() -> int:
+    """Server map size in metres. Set RUST_WORLD_SIZE to match the actual server."""
+    return int(os.environ.get("RUST_WORLD_SIZE", "3500"))

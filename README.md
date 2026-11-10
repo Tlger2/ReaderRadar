@@ -50,6 +50,7 @@ Open `http://<reader-ip>:8080/radar` (login required).
 | `SNAPSHOT_PATH` | `%TEMP%\ReaderRadar-Rust-live.json` | Live entity JSON |
 | `WEB_RADAR_URL` | `http://localhost:8080` | FastAPI base URL |
 | `WEB_RADAR_KEY` | (empty) | `X-Push-Key` for `/push` |
+| `RUST_WORLD_SIZE` | `3500` | Server map size in metres |
 
 If neither `VMM_DLL_PATH` nor `MEMPROCFS_DIR` is set, common Download/Tools paths are tried.
 
@@ -98,9 +99,45 @@ Offline `dump.cs` / Il2CppDumper support remains a planned path via `rust_offset
 - No firmware / driver / Defender / BIOS changes
 - No aimbot, chams, recoil reduction, or any write-based feature
 
+## Snapshot output schema
+
+`rust_snapshot.py` writes this JSON every ~100 ms (10 Hz):
+
+```jsonc
+{
+  "ts":           1700000000.0,     // Unix timestamp
+  "world_size":   3500,             // from RUST_WORLD_SIZE env
+  "local_player": {                 // null when not detected
+    "position": {"x": 0, "y": 0, "z": 0},
+    "health": 85.5
+  },
+  "entities": [
+    {
+      "category": "player",         // see entity categories below
+      "position": {"x": 100, "y": 5, "z": 200},
+      "meta": {
+        "name":          "Wolfpack",
+        "health":        72.0,
+        "held":          "rifle.ak",   // null when nothing held / unknown
+        "ammo_contents": 0,            // best-effort; 0 when unresolved
+        "ammo_capacity": 0,
+        "alive":         true
+      }
+    }
+  ]
+}
+```
+
+**Entity categories** (`category` field): `player`, `player-sleeping`, `player-npc`,
+`animal`, `animal-bear`, `animal-wolf`, `ore-stone`, `ore-metal`, `ore-sulfur`, `ore-hqm`,
+`loot-basic`, `loot-military`, `loot-elite`, `loot-barrel`, `supply-drop`, `vehicle`,
+`bradley`, `helicopter`, `pickup`, `hemp`, `berry`, `food`, `base`, `dropped`,
+`locked-crate`, `locked-crate-ent`.
+
 ## TODO
 
-- [ ] Optional offline `dump.cs` parser path (`dma_probe.py`)
-- [ ] Richer entity categories (ammo, timers, inventory) matching the web UI schema
+- [ ] Ammo reading (requires `BaseProjectile.primaryMagazine` offset from probe)
+- [ ] Inventory slot reading (belt, wear, main) — offsets not yet probed
+- [ ] Optional offline `dump.cs` / Il2CppDumper parser path
 - [ ] Populate and version `rust_offsets_schema.json` per game build
 - [ ] Validation session checklist on private server
