@@ -5,46 +5,40 @@
 #           IL2CPP MetadataRegistration at the confirmed RVA.
 #           Produces dump_fields.json consumed by rust_snapshot.py.
 #
-# ChatGPT-identified bugs corrected:
-#   #1  scan_entity_list_static returned None — full scan loop implemented
-#   #2  field-diff resolver — health/display_name/flags/held_entity identified
+# Config: see dma_config.py (MEMPROCFS_DIR / VMM_DLL_PATH / RUST_PROCESS)
 
-import sys
+from __future__ import annotations
+
 import struct
 import json
 import ctypes
 from pathlib import Path
 
+import dma_config
+
 # ─── Confirmed build constants ─────────────────────────────────────────────────
 METADATA_RVA        = 0x0DBED230
 GAMEASSEMBLY_SHA256 = "199a470f2510320be42d127cc55e946f51a2fc0b0b3ed0bf8671c2a8bb73b252"
 
-# Approximate expected field offsets based on public Rust IL2CPP research
-# (used as validation, not as hardcoded values — scanner confirms actuals)
 EXPECT_HEALTH_MIN  = 0x200
 EXPECT_HEALTH_MAX  = 0x280
 
 
 def load_vmm():
-    dll_path = (
-        Path.home()
-        / "Downloads"
-        / "PCILeech_files_and_binaries_v4.20.0-win_x64-20261014"
-        / "vmm.dll"
-    )
-    if not dll_path.exists():
-        raise FileNotFoundError(f"vmm.dll not found at {dll_path}")
+    dll_path = dma_config.vmm_dll_path()
+    print(f"[probe] loading {dll_path}")
     return ctypes.CDLL(str(dll_path))
 
 
 def init_vmm(vmm):
-    args = [b"", b"-device", b"fpga"]
+    device = dma_config.vmm_device()
+    args = [b"", b"-device", device.encode("ascii")]
     argc = len(args)
     argv_type = ctypes.c_char_p * argc
     argv = argv_type(*args)
     handle = vmm.VMMDLL_Initialize(argc, argv)
     if not handle:
-        raise RuntimeError("VMMDLL_Initialize failed")
+        raise RuntimeError(f"VMMDLL_Initialize failed (device={device})")
     return handle
 
 
@@ -52,7 +46,7 @@ def find_pid(vmm, handle, name: bytes) -> int:
     pid = ctypes.c_ulong(0)
     ok = vmm.VMMDLL_PidGetFromName(handle, name, ctypes.byref(pid))
     if not ok or pid.value == 0:
-        raise RuntimeError(f"Process '{name}' not found")
+        raise RuntimeError(f"Process '{name.decode(errors='replace')}' not found")
     return pid.value
 
 
@@ -66,7 +60,6 @@ def read_mem(vmm, handle, pid: int, addr: int, size: int) -> bytes:
 
 
 def ptr(vmm, handle, pid, addr):
-    """Read a 64-bit pointer."""
     return struct.unpack_from("<Q", read_mem(vmm, handle, pid, addr, 8))[0]
 
 
@@ -84,7 +77,6 @@ def read_cstr(vmm, handle, pid, addr, maxlen=64) -> str:
 
 
 def get_module_base(vmm, handle, pid, mod_name: str) -> int:
-    """Get base address of a module by name via VMMDLL_ProcessGetModuleBaseU."""
     base = vmm.VMMDLL_ProcessGetModuleBaseU(handle, pid, mod_name.encode())
     if base == 0:
         raise RuntimeError(f"Module '{mod_name}' not found in pid {pid}")
@@ -96,34 +88,17 @@ def get_module_base(vmm, handle, pid, mod_name: str) -> int:
 # =============================================================================
 
 class MetadataReg:
-    """Wraps IL2CPP MetadataRegistration for type enumeration."""
-
     def __init__(self, vmm, handle, pid, ga_base):
         self.vmm = vmm
         self.handle = handle
         self.pid = pid
-        # MetadataRegistration is a struct pointer at the RVA
         mr_ptr = ptr(vmm, handle, pid, ga_base + METADATA_RVA)
-        # MetadataRegistration layout (IL2CPP v29+):
-        #   +0x00  typeCount       int64
-        #   +0x08  types           Il2CppType**
-        #   +0x10  genericClassesCount
-        #   +0x18  genericClasses
-        #   +0x20  genericInstsCount
-        #   +0x28  genericInsts
-        #   +0x30  genericMethodTableCount
-        #   +0x38  genericMethodTable
-        #   +0x40  numImageInfos
-        #   +0x48  imageInfos
-        #   +0x50  numTypeInfos
-        #   +0x58  typeInfos       Il2CppClass**
         self.mr_ptr      = mr_ptr
         self.type_count  = struct.unpack_from("<q", read_mem(vmm, handle, pid, mr_ptr + 0x50, 8))[0]
         self.type_infos  = ptr(vmm, handle, pid, mr_ptr + 0x58)
         print(f"[probe] MetadataReg @ 0x{mr_ptr:016X}  typeCount={self.type_count}")
 
     def iter_types(self):
-        """Yield (index, klass_ptr) for all typeInfos."""
         BATCH = 256
         for i in range(0, self.type_count, BATCH):
             count = min(BATCH, self.type_count - i)
@@ -151,7 +126,6 @@ class MetadataReg:
             return 0
 
     def klass_fields(self, klass_ptr):
-        """Return list of (name, offset) for instance fields."""
         try:
             fields_ptr = ptr(self.vmm, self.handle, self.pid, klass_ptr + 0x80)
             field_count = u32(self.vmm, self.handle, self.pid, klass_ptr + 0xF0)
@@ -159,7 +133,6 @@ class MetadataReg:
                 return []
             result = []
             for i in range(field_count):
-                # Il2CppFieldInfo: name_ptr[8] + type_ptr[8] + offset[4] + attrs[4]
                 field_base = fields_ptr + i * 0x14
                 fname_ptr = ptr(self.vmm, self.handle, self.pid, field_base)
                 offset    = u32(self.vmm, self.handle, self.pid, field_base + 0x10)
@@ -170,21 +143,7 @@ class MetadataReg:
             return []
 
 
-# =============================================================================
-# Entity list discovery  (#1 fix: actual scan loop)
-# =============================================================================
-
 def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
-    """
-    Walk MetadataRegistration typeInfos looking for BaseNetworkable.
-    Then find the clientEntities static field (a ListDictionary-shaped object).
-    Returns {
-        'klass_ptr': int,
-        'static_fields_ptr': int,
-        'client_entities_offset': int,
-        'entities_ptr': int,   # runtime pointer to the ListDictionary object
-    }
-    """
     target_names = {"BaseNetworkable", "EntityManager"}
     found = {}
 
@@ -200,7 +159,6 @@ def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
     if not found:
         raise RuntimeError("Could not find BaseNetworkable in MetadataRegistration")
 
-    # Prefer BaseNetworkable
     klass_ptr = found.get("BaseNetworkable") or next(iter(found.values()))
     static_fields = mr.klass_static_fields(klass_ptr)
     print(f"[probe] BaseNetworkable static_fields @ 0x{static_fields:016X}")
@@ -208,14 +166,8 @@ def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
     if static_fields == 0:
         raise RuntimeError("BaseNetworkable static_fields ptr is null — wrong class or build")
 
-    # Scan static field region for a ListDictionary-shaped object:
-    # clientEntities layout: +0x10=keys_arr +0x18=vals_arr +0x20=count
-    # Strategy: at each 8-byte aligned slot, try to read it as an object ptr,
-    # then validate that ptr[+0x20] is a sane entity count (1..8192) and
-    # ptr[+0x10] and ptr[+0x18] are valid heap pointers.
-    SCAN_RANGE = 0x200   # scan first 512 bytes of static field block
+    SCAN_RANGE = 0x200
     STRIDE     = 8
-
     best_offset = None
     best_ptr    = None
 
@@ -224,7 +176,6 @@ def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
             cand_ptr = ptr(mr.vmm, mr.handle, mr.pid, static_fields + off)
             if cand_ptr < 0x1_0000_0000 or cand_ptr > 0x7FFF_FFFF_FFFF:
                 continue
-            # Try reading ListDictionary header
             count    = u32(mr.vmm, mr.handle, mr.pid, cand_ptr + 0x20)
             keys_arr = ptr(mr.vmm, mr.handle, mr.pid, cand_ptr + 0x10)
             vals_arr = ptr(mr.vmm, mr.handle, mr.pid, cand_ptr + 0x18)
@@ -232,7 +183,6 @@ def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
                 continue
             if keys_arr < 0x1_0000_0000 or vals_arr < 0x1_0000_0000:
                 continue
-            # Quick sanity: first element of vals_arr should be a valid ptr
             first_entity = ptr(mr.vmm, mr.handle, mr.pid, vals_arr + 0x20)
             if first_entity < 0x1_0000_0000:
                 continue
@@ -254,19 +204,11 @@ def scan_entity_list_static(mr: MetadataReg, ga_base: int) -> dict:
     }
 
 
-# =============================================================================
-# Field-offset resolver  (#2 fix: health/display_name/flags/held_entity)
-# =============================================================================
-
 def resolve_field_offsets(mr: MetadataReg) -> dict:
-    """
-    Find field offsets for key player fields across the inheritance chain.
-    Returns dict of field_name → offset.
-    """
     target_classes = [
-        "BaseCombatEntity",   # health
-        "BasePlayer",         # displayName, flags, heldEntity
-        "BaseNetworkable",    # net
+        "BaseCombatEntity",
+        "BasePlayer",
+        "BaseNetworkable",
     ]
 
     offsets = {}
@@ -278,27 +220,26 @@ def resolve_field_offsets(mr: MetadataReg) -> dict:
             continue
         fields = mr.klass_fields(klass)
         for fname, foff in fields:
-            # Normalize field names (IL2CPP hashes them, but name ptr still present)
-            if "health" in fname.lower() and "max" not in fname.lower():
+            lower = fname.lower()
+            if "health" in lower and "max" not in lower:
                 offsets["health"] = foff
                 print(f"[probe]   {name}.{fname} → 0x{foff:X}  (health)")
-            elif "displayname" in fname.lower() or fname.lower() == "_displayname":
+            elif "displayname" in lower or lower == "_displayname":
                 offsets["display_name"] = foff
                 print(f"[probe]   {name}.{fname} → 0x{foff:X}  (display_name)")
-            elif fname.lower() in ("flags", "_flags", "entityflags"):
+            elif lower in ("flags", "_flags", "entityflags"):
                 offsets["flags"] = foff
                 print(f"[probe]   {name}.{fname} → 0x{foff:X}  (flags)")
-            elif "heldentity" in fname.lower() or fname.lower() == "_heldentity":
+            elif "heldentity" in lower or lower == "_heldentity":
                 offsets["held_entity"] = foff
                 print(f"[probe]   {name}.{fname} → 0x{foff:X}  (held_entity)")
-            elif fname.lower() in ("lifestate", "_lifestate"):
+            elif lower in ("lifestate", "_lifestate"):
                 offsets["life_state"] = foff
                 print(f"[probe]   {name}.{fname} → 0x{foff:X}  (life_state)")
 
         if len(offsets) >= 5:
             break
 
-    # Fallback: use known-good offsets from public research if scanner missed any
     defaults = {
         "health"      : 0x218,
         "display_name": 0x370,
@@ -314,16 +255,13 @@ def resolve_field_offsets(mr: MetadataReg) -> dict:
     return offsets
 
 
-# =============================================================================
-# Main
-# =============================================================================
-
 def main():
     vmm = load_vmm()
     handle = init_vmm(vmm)
-    pid = find_pid(vmm, handle, b"RustClient.exe")
+    proc = dma_config.process_name_bytes()
+    pid = find_pid(vmm, handle, proc)
     ga_base = get_module_base(vmm, handle, pid, "GameAssembly.dll")
-    print(f"[probe] pid={pid}  GameAssembly.dll base=0x{ga_base:016X}")
+    print(f"[probe] pid={pid}  process={dma_config.process_name()}  GameAssembly.dll base=0x{ga_base:016X}")
 
     mr = MetadataReg(vmm, handle, pid, ga_base)
 
@@ -333,13 +271,13 @@ def main():
     result = {
         "ga_base"              : ga_base,
         "pid"                  : pid,
+        "process"              : dma_config.process_name(),
         "entity_info"          : entity_info,
         "field_offsets"        : field_offsets,
     }
 
     out_path = Path(__file__).parent / "dump_fields.json"
-    with open(out_path, "w") as f:
-        # Convert ints to hex strings for readability
+    with open(out_path, "w", encoding="utf-8") as f:
         def default(o):
             if isinstance(o, int):
                 return hex(o)
