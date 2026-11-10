@@ -2,10 +2,13 @@
 # lang: Python 3.10+, file: rust_snapshot.py
 # target: Windows host with MemProcFS vmm.dll, Rust game process
 # function: Walk clientEntities, classify entities, read world positions
-#           via Unity 6 transform hierarchy, publish JSON to web radar.
-#           Reuses world_position() logic from skeld_snapshot.py.
+#           via Unity 6 transform hierarchy, write live JSON for the web stack.
+#
+# Config: see dma_config.py (MEMPROCFS_DIR / VMM_DLL_PATH / RUST_PROCESS / SNAPSHOT_PATH)
 
-import sys
+from __future__ import annotations
+
+import argparse
 import struct
 import json
 import math
@@ -15,55 +18,49 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
+import dma_config
+
 # ─── Probe data (populated by load_probe_data) ────────────────────────────────
 GA_BASE           = 0
 PID               = 0
-ENTITIES_PTR      = 0        # pointer to clientEntities ListDictionary object
+ENTITIES_PTR      = 0
 FIELD_HEALTH      = 0x218
 FIELD_DISPLAY_NAME= 0x370
 FIELD_FLAGS       = 0x1C4
 FIELD_LIFE_STATE  = 0x278
 FIELD_HELD_ENTITY = 0x458
 
-# ListDictionary layout
 LD_KEYS_OFF  = 0x10
 LD_VALS_OFF  = 0x18
 LD_COUNT_OFF = 0x20
-LD_ELEM_BASE = 0x20   # first element in the array
-LD_ELEM_SIZE = 8      # each element is a managed pointer (8 bytes)
+LD_ELEM_BASE = 0x20
+LD_ELEM_SIZE = 8
 
-# ─── Radar state ──────────────────────────────────────────────────────────────
 _radar_state = {"entities": [], "ts": 0}
 _radar_lock  = threading.Lock()
 
-# =============================================================================
-# VMMDLL setup (mirrors skeld_probe.py patterns)
-# =============================================================================
 
 def load_vmm():
-    dll_path = (
-        Path.home()
-        / "Downloads"
-        / "PCILeech_files_and_binaries_v4.20.0-win_x64-20261014"
-        / "vmm.dll"
-    )
+    dll_path = dma_config.vmm_dll_path()
+    print(f"[snap] loading {dll_path}")
     return ctypes.CDLL(str(dll_path))
 
 
 def init_vmm(vmm):
-    args = [b"", b"-device", b"fpga"]
+    device = dma_config.vmm_device()
+    args = [b"", b"-device", device.encode("ascii")]
     argc = len(args)
     argv = (ctypes.c_char_p * argc)(*args)
     h = vmm.VMMDLL_Initialize(argc, argv)
     if not h:
-        raise RuntimeError("VMMDLL_Initialize failed")
+        raise RuntimeError(f"VMMDLL_Initialize failed (device={device})")
     return h
 
 
 def find_pid(vmm, h, name: bytes) -> int:
     pid = ctypes.c_ulong(0)
     if not vmm.VMMDLL_PidGetFromName(h, name, ctypes.byref(pid)) or not pid.value:
-        raise RuntimeError(f"Process '{name}' not found")
+        raise RuntimeError(f"Process '{name.decode(errors='replace')}' not found")
     return pid.value
 
 
@@ -98,7 +95,6 @@ def _cstr(vmm, h, pid, addr, maxlen=64) -> str:
 
 
 def _managed_str(vmm, h, pid, str_obj) -> str:
-    """Read a managed System.String: length at +0x10, chars at +0x14 (UTF-16LE)."""
     if not str_obj:
         return ""
     try:
@@ -111,24 +107,7 @@ def _managed_str(vmm, h, pid, str_obj) -> str:
         return ""
 
 
-# =============================================================================
-# Unity 6 world position  (adapted from skeld_snapshot.py)
-# =============================================================================
-
 def world_position(vmm, h, pid, native_transform) -> tuple[float, float, float]:
-    """
-    Walk Unity 6 transform hierarchy to compute world-space position.
-    native_transform: native C++ Transform* (from managed Component._CachedPtr + hierarchy ptr)
-
-    Hierarchy layout (Unity 6):
-      native+0x38 → hierarchy ptr
-      native+0x40 → transform index (int32)
-      hierarchy+0x18 → transform records array
-      hierarchy+0x20 → parent indices array
-      record[i*0x30 + 0x00..0x08] = local translation (x,y,z float32×3)
-      record[i*0x30 + 0x10..0x18] = local rotation quaternion (x,y,z,w)
-      record[i*0x30 + 0x20..0x28] = local scale (x,y,z)
-    """
     hierarchy = _ptr(vmm, h, pid, native_transform + 0x38)
     index_raw = _read(vmm, h, pid, native_transform + 0x40, 4)
     index = struct.unpack_from("<i", index_raw)[0]
@@ -144,7 +123,6 @@ def world_position(vmm, h, pid, native_transform) -> tuple[float, float, float]:
         raw = _read(vmm, h, pid, base, 12)
         return struct.unpack_from("<3f", raw)
 
-    # Collect full chain (capped at 64 to avoid infinite loops)
     chain = []
     cur = index
     seen = set()
@@ -159,8 +137,6 @@ def world_position(vmm, h, pid, native_transform) -> tuple[float, float, float]:
             break
         cur = parent
 
-    # Accumulate world position from root down
-    # Simplified: sum translations (rotation/scale omitted — good enough for radar)
     wx, wy, wz = 0.0, 0.0, 0.0
     for idx in reversed(chain):
         lx, ly, lz = read_local(idx)
@@ -171,20 +147,7 @@ def world_position(vmm, h, pid, native_transform) -> tuple[float, float, float]:
     return wx, wy, wz
 
 
-# =============================================================================
-# Entity reading
-# =============================================================================
-
 def get_native_transform(vmm, h, pid, entity_ptr) -> int:
-    """
-    IL2CPP managed → native bridge for Unity Component.
-    entity_ptr[+0x10] = native Component* (the _CachedPtr field).
-    From there: native_component[+0x30] = native GameObject*
-    native_gameobject[+0x30] = component storage
-    component_storage[+0x08] = Transform entry
-    transform_entry[+0x28]   = managed Transform wrapper
-    managed_transform[+0x10] = native Transform*
-    """
     native_comp   = _ptr(vmm, h, pid, entity_ptr + 0x10)
     native_go     = _ptr(vmm, h, pid, native_comp + 0x30)
     comp_storage  = _ptr(vmm, h, pid, native_go   + 0x30)
@@ -225,7 +188,6 @@ def read_entity(vmm, h, pid, entity_ptr: int) -> dict | None:
         elif "ResourceEntity" in name or "OreResource" in name:
             classify = "resource"
 
-        # Position
         native_xform = get_native_transform(vmm, h, pid, entity_ptr)
         x, y, z = world_position(vmm, h, pid, native_xform)
 
@@ -238,7 +200,6 @@ def read_entity(vmm, h, pid, entity_ptr: int) -> dict | None:
             "z"       : round(z, 2),
         }
 
-        # Player-specific fields
         if classify == "player":
             try:
                 health = _f32(vmm, h, pid, entity_ptr + FIELD_HEALTH)
@@ -258,7 +219,6 @@ def read_entity(vmm, h, pid, entity_ptr: int) -> dict | None:
                 result["flags"]      = flags
                 result["life_state"] = life_state
                 result["alive"]      = (life_state == 0)
-                # IsOwner bit (flag 128 in Rust) used to tag local player
                 result["is_local"]   = bool(flags & 0x80)
             except Exception:
                 result["alive"]    = True
@@ -270,20 +230,14 @@ def read_entity(vmm, h, pid, entity_ptr: int) -> dict | None:
         return None
 
 
-# =============================================================================
-# ClientEntities walker
-# =============================================================================
-
 def walk_entities(vmm, h, pid) -> list[dict]:
     try:
-        # Re-read entities_ptr live (may have been relocated)
         entities_ptr = ENTITIES_PTR
         count = _u32(vmm, h, pid, entities_ptr + LD_COUNT_OFF)
         if count == 0 or count > 8192:
             return []
 
         vals_arr = _ptr(vmm, h, pid, entities_ptr + LD_VALS_OFF)
-        # Read all entity pointers in one batch
         raw = _read(vmm, h, pid, vals_arr + LD_ELEM_BASE, count * LD_ELEM_SIZE)
 
         entities = []
@@ -298,29 +252,32 @@ def walk_entities(vmm, h, pid) -> list[dict]:
         return []
 
 
-# =============================================================================
-# Snapshot loop
-# =============================================================================
+def write_snapshot_file(state: dict, path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    payload = json.dumps(state, separators=(",", ":")).encode("utf-8")
+    tmp.write_bytes(payload)
+    tmp.replace(path)
 
-def snapshot_loop(vmm, h, pid, interval: float = 0.10):
+
+def snapshot_loop(vmm, h, pid, snap_path: Path, interval: float = 0.10):
     global _radar_state
     while True:
         t0 = time.monotonic()
         entities = walk_entities(vmm, h, pid)
+        state = {"entities": entities, "ts": time.time()}
         with _radar_lock:
-            _radar_state = {"entities": entities, "ts": time.time()}
+            _radar_state = state
+        try:
+            write_snapshot_file(state, snap_path)
+        except OSError as e:
+            print(f"[snap] write {snap_path}: {e}")
         elapsed = time.monotonic() - t0
-        wait = max(0.0, interval - elapsed)
-        time.sleep(wait)
+        time.sleep(max(0.0, interval - elapsed))
 
-
-# =============================================================================
-# Web radar server
-# =============================================================================
 
 class RadarHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
-        pass   # silence access log
+        pass
 
     def do_GET(self):
         if self.path == "/data":
@@ -329,14 +286,14 @@ class RadarHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", len(payload))
+            self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
         elif self.path in ("/", "/index.html"):
             html = RADAR_HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", len(html))
+            self.send_header("Content-Length", str(len(html)))
             self.end_headers()
             self.wfile.write(html)
         else:
@@ -348,7 +305,7 @@ RADAR_HTML = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Rust Radar</title>
+<title>Rust Radar (local debug)</title>
 <style>
   body { background:#111; color:#eee; font-family:monospace; margin:0; }
   canvas { display:block; margin:auto; background:#1a1a1a; }
@@ -356,7 +313,7 @@ RADAR_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<div id="info">Rust DMA Radar — connecting...</div>
+<div id="info">Rust DMA Radar (local) — connecting...</div>
 <canvas id="c" width="800" height="800"></canvas>
 <script>
 const C = document.getElementById('c');
@@ -398,7 +355,6 @@ async function poll() {
   try {
     const r = await fetch('/data');
     data = await r.json();
-    // Center on local player
     const local = data.entities.find(e => e.is_local);
     if (local) { offX = local.x; offY = local.z; }
     info.textContent = `entities: ${data.entities.length}  ts: ${new Date(data.ts*1000).toLocaleTimeString()}`;
@@ -413,10 +369,6 @@ poll();
 """
 
 
-# =============================================================================
-# Probe data loader
-# =============================================================================
-
 def load_probe_data():
     global GA_BASE, PID, ENTITIES_PTR
     global FIELD_HEALTH, FIELD_DISPLAY_NAME, FIELD_FLAGS, FIELD_LIFE_STATE, FIELD_HELD_ENTITY
@@ -425,7 +377,7 @@ def load_probe_data():
     if not path.exists():
         raise FileNotFoundError("dump_fields.json not found — run rust_probe.py first")
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         d = json.load(f)
 
     def h(v):
@@ -445,28 +397,43 @@ def load_probe_data():
     print(f"[snap] GA_BASE=0x{GA_BASE:016X}  PID={PID}  entities_ptr=0x{ENTITIES_PTR:016X}")
 
 
-# =============================================================================
-# Main
-# =============================================================================
-
 def main():
+    parser = argparse.ArgumentParser(description="Rust DMA entity snapshot loop")
+    parser.add_argument("--local-server", action="store_true",
+                        help="Also serve a minimal debug radar on :8765")
+    parser.add_argument("--interval", type=float, default=0.10,
+                        help="Snapshot interval in seconds (default 0.10)")
+    args = parser.parse_args()
+
     load_probe_data()
     vmm = load_vmm()
     h   = init_vmm(vmm)
 
-    # Reattach to same PID (probe may have used a stale PID — re-resolve)
-    pid = find_pid(vmm, h, b"RustClient.exe")
-    print(f"[snap] attached pid={pid}")
+    pid = find_pid(vmm, h, dma_config.process_name_bytes())
+    print(f"[snap] attached pid={pid} process={dma_config.process_name()}")
 
-    # Launch snapshot thread
-    t = threading.Thread(target=snapshot_loop, args=(vmm, h, pid), daemon=True)
+    snap_path = dma_config.snapshot_path()
+    print(f"[snap] writing live JSON to {snap_path}")
+
+    t = threading.Thread(
+        target=snapshot_loop,
+        args=(vmm, h, pid, snap_path, args.interval),
+        daemon=True,
+    )
     t.start()
 
-    # Serve radar
-    port = 8765
-    srv  = HTTPServer(("0.0.0.0", port), RadarHandler)
-    print(f"[snap] radar at http://localhost:{port}/")
-    srv.serve_forever()
+    if args.local_server:
+        port = 8765
+        srv  = HTTPServer(("0.0.0.0", port), RadarHandler)
+        print(f"[snap] local debug radar at http://localhost:{port}/")
+        srv.serve_forever()
+    else:
+        print("[snap] running (Ctrl+C to stop). Prefer web_radar_server + web_radar_push for UI.")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("[snap] stopped")
 
 
 if __name__ == "__main__":

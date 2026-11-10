@@ -1,53 +1,75 @@
 """
-web_radar_push.py  —  watches the live snapshot JSON and pushes it to the web server.
+web_radar_push.py — watches the live snapshot JSON and POSTs it to the web server.
 
-Run alongside skeld_snapshot.py:
-  python web_radar_push.py
+Recommended stack:
+  1. python rust_probe.py
+  2. python rust_snapshot.py
+  3. python web_radar_server.py   (or uvicorn ...)
+  4. python web_radar_push.py
 
-Configure WEB_SERVER and PUSH_KEY below, or set env vars:
-  WEB_RADAR_URL   e.g. http://your-vps:8080
+Env / dma_config:
+  SNAPSHOT_PATH   live JSON path (default %TEMP%/ReaderRadar-Rust-live.json)
+  WEB_RADAR_URL   e.g. http://127.0.0.1:8080
   WEB_RADAR_KEY   push key from web_radar_config.json
 """
 
+from __future__ import annotations
+
 import json
-import os
 import time
+import urllib.error
 import urllib.request
-from pathlib import Path
 
-SNAP_FILE  = Path(os.environ.get("TEMP", "/tmp")) / "ReaderRadar-Skeld-live.json"
-WEB_SERVER = os.environ.get("WEB_RADAR_URL", "http://localhost:8080")
-PUSH_KEY   = os.environ.get("WEB_RADAR_KEY", "PASTE_YOUR_PUSH_KEY_HERE")
-INTERVAL   = 1.0   # seconds between pushes
+import dma_config
 
-def push(payload: bytes) -> bool:
+INTERVAL = 0.25  # seconds between mtime checks
+
+
+def push(url: str, key: str, payload: bytes) -> bool:
     req = urllib.request.Request(
-        f"{WEB_SERVER}/push",
+        f"{url}/push",
         data=payload,
-        headers={"Content-Type": "application/json",
-                 "X-Push-Key": PUSH_KEY},
+        headers={
+            "Content-Type": "application/json",
+            "X-Push-Key": key,
+        },
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
-            return resp.status == 200
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        print(f"[push] HTTP {e.code}: {e.reason}")
+        return False
     except Exception as e:
         print(f"[push] {e}")
         return False
 
+
 def main():
-    print(f"[push] Watching {SNAP_FILE}")
-    print(f"[push] Server  {WEB_SERVER}")
+    snap = dma_config.snapshot_path()
+    server = dma_config.web_radar_url()
+    key = dma_config.web_radar_key()
+
+    if not key or key == "PASTE_YOUR_PUSH_KEY_HERE":
+        print("[push] WARNING: WEB_RADAR_KEY is empty or placeholder.")
+        print("[push] Set WEB_RADAR_KEY to the push_key from web_radar_config.json")
+
+    print(f"[push] Watching {snap}")
+    print(f"[push] Server  {server}")
     last_mtime = 0.0
     consecutive_errors = 0
 
     while True:
         try:
-            mtime = SNAP_FILE.stat().st_mtime if SNAP_FILE.exists() else 0.0
+            if not snap.exists():
+                time.sleep(INTERVAL)
+                continue
+            mtime = snap.stat().st_mtime
             if mtime != last_mtime and mtime > 0:
-                raw = SNAP_FILE.read_bytes()
-                json.loads(raw)         # validate before sending
-                if push(raw):
+                raw = snap.read_bytes()
+                json.loads(raw)  # validate before sending
+                if push(server, key, raw):
                     last_mtime = mtime
                     consecutive_errors = 0
                 else:
@@ -57,6 +79,7 @@ def main():
             if consecutive_errors % 10 == 1:
                 print(f"[push] error: {e}")
         time.sleep(INTERVAL)
+
 
 if __name__ == "__main__":
     main()
